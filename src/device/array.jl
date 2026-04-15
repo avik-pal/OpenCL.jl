@@ -48,6 +48,7 @@ Base.size(g::CLDeviceArray) = g.dims
 Base.sizeof(x::CLDeviceArray) = Base.elsize(x) * length(x)
 
 # we store the array length too; computing prod(size) is expensive
+Base.size(g::CLDeviceArray{<:Any, 1}) = (g.len,)
 Base.length(g::CLDeviceArray) = g.len
 
 Base.pointer(x::CLDeviceArray{T,<:Any,A}) where {T,A} = Base.unsafe_convert(LLVMPtr{T,A}, x)
@@ -81,7 +82,11 @@ Base.unsafe_convert(::Type{LLVMPtr{T,A}}, x::CLDeviceArray{T,<:Any,A}) where {T,
 end
 
 @device_function @inline function arrayref(A::CLDeviceArray{T}, index::Integer) where {T}
-    @boundscheck checkbounds(A, index)
+    # simplified bounds check to avoid the OneTo construction, which calls `max`
+    # and breaks elimination of redundant bounds checks in the generated code.
+    #@boundscheck checkbounds(A, index)
+    @boundscheck index <= length(A) || Base.throw_boundserror(A, index)
+
     if isbitstype(T)
         arrayref_bits(A, index)
     else #if isbitsunion(T)
@@ -123,7 +128,10 @@ end
 end
 
 @device_function @inline function arrayset(A::CLDeviceArray{T}, x::T, index::Integer) where {T}
-    @boundscheck checkbounds(A, index)
+    # simplified bounds check (see `arrayref`)
+    #@boundscheck checkbounds(A, index)
+    @boundscheck index <= length(A) || Base.throw_boundserror(A, index)
+
     if isbitstype(T)
         arrayset_bits(A, x, index)
     else #if isbitsunion(T)
@@ -154,7 +162,10 @@ end
 end
 
 @device_function @inline function const_arrayref(A::CLDeviceArray{T}, index::Integer) where {T}
-    @boundscheck checkbounds(A, index)
+    # simplified bounds check (see `arrayset`)
+    #@boundscheck checkbounds(A, index)
+    @boundscheck index <= length(A) || Base.throw_boundserror(A, index)
+
     align = alignment(A)
     unsafe_cached_load(pointer(A), index, Val(align))
 end
@@ -212,7 +223,7 @@ Base.@propagate_inbounds Base.getindex(A::Const, i1::Integer) = const_arrayref(A
 Base.show(io::IO, a::CLDeviceVector) =
     print(io, "$(length(a))-element device array at $(pointer(a))")
 Base.show(io::IO, a::CLDeviceArray) =
-    print(io, "$(join(a.shape, '×')) device array at $(pointer(a))")
+    print(io, "$(join(size(a), '×')) device array at $(pointer(a))")
 
 Base.show(io::IO, mime::MIME"text/plain", a::CLDeviceArray) = show(io, a)
 
@@ -225,17 +236,17 @@ Base.show(io::IO, mime::MIME"text/plain", a::CLDeviceArray) = show(io, a)
 end
 
 function Base.reinterpret(::Type{T}, a::CLDeviceArray{S,N,A}) where {T,S,N,A}
-  err = _reinterpret_exception(T, a)
-  err === nothing || throw(err)
+    err = GPUArrays._reinterpret_exception(T, a)
+    err === nothing || throw(err)
 
-  if sizeof(T) == sizeof(S) # fast case
-    return CLDeviceArray{T,N,A}(size(a), reinterpret(LLVMPtr{T,A}, a.ptr), a.maxsize)
-  end
+    if sizeof(T) == sizeof(S) # fast case
+        return CLDeviceArray{T,N,A}(size(a), reinterpret(LLVMPtr{T,A}, a.ptr), a.maxsize)
+    end
 
-  isize = size(a)
-  size1 = div(isize[1]*sizeof(S), sizeof(T))
-  osize = tuple(size1, Base.tail(isize)...)
-  return CLDeviceArray{T,N,A}(osize, reinterpret(LLVMPtr{T,A}, a.ptr), a.maxsize)
+    isize = size(a)
+    size1 = div(isize[1]*sizeof(S), sizeof(T))
+    osize = tuple(size1, Base.tail(isize)...)
+    return CLDeviceArray{T,N,A}(osize, reinterpret(LLVMPtr{T,A}, a.ptr), a.maxsize)
 end
 
 

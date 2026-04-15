@@ -3,6 +3,7 @@ using Dates
 import REPL
 using Printf: @sprintf
 using Base.Filesystem: path_separator
+using Preferences
 
 # parse some command-line arguments
 function extract_flag!(args, flag, default=nothing)
@@ -32,13 +33,16 @@ if do_help
 
                --help             Show this text.
                --list             List all available tests.
+               --verbose          Print more information during testing.
                --quickfail        Fail the entire run as soon as a single test errored.
                --jobs=N           Launch `N` processes to perform tests (default: Sys.CPU_THREADS).
+               --platform=NAME    Run tests on the platform named `NAME` (default: all platforms).
 
                Remaining arguments filter the tests that will be executed.""")
     exit(0)
 end
 _, jobs = extract_flag!(ARGS, "--jobs", Sys.CPU_THREADS)
+do_verbose, _ = extract_flag!(ARGS, "--verbose")
 do_quickfail, _ = extract_flag!(ARGS, "--quickfail")
 
 include("setup.jl")     # make sure everything is precompiled
@@ -81,6 +85,11 @@ for (rootpath, dirs, files) in walkdir(@__DIR__)
   end
 end
 sort!(tests; by=(file)->stat("$(@__DIR__)/$file.jl").size, rev=true)
+## GPUArrays testsuite
+for name in keys(GPUArraysTestSuite.tests)
+    push!(tests, "gpuarrays/$name")
+    test_runners["gpuarrays/$name"] = ()->GPUArraysTestSuite.tests[name](CLArray)
+end
 ## finalize
 unique!(tests)
 
@@ -94,13 +103,26 @@ if do_list
     end
     exit(0)
 end
+## --platform selector
+do_platform, platform = extract_flag!(ARGS, "--platform", nothing)
 ## no options should remain
 optlike_args = filter(startswith("-"), ARGS)
 if !isempty(optlike_args)
     error("Unknown test options `$(join(optlike_args, " "))` (try `--help` for usage instructions)")
 end
 ## the remaining args filter tests
-if !isempty(ARGS)
+if isempty(ARGS)
+  # default to running all tests, except:
+  filter!(tests) do test
+    if load_preference(OpenCL, "default_memory_backend") == "svm" &&
+       test == "gpuarrays/indexing scalar"
+        # GPUArrays' scalar indexing tests assume that indexing is not supported
+        return false
+    end
+
+    return true
+  end
+else
   filter!(tests) do test
     any(arg->startswith(test, arg), ARGS)
   end
@@ -170,6 +192,16 @@ function print_testworker_stats(test, wrkr, resp)
     end
 end
 global print_testworker_started = (name, wrkr)->begin
+    if do_verbose
+        lock(print_lock)
+        try
+            printstyled(name, color=:white)
+            printstyled(lpad("($wrkr)", name_align - textwidth(name) + 1, " "), " |",
+                " "^elapsed_align, "started at $(now())\n", color=:white)
+        finally
+            unlock(print_lock)
+        end
+    end
 end
 function print_testworker_errored(name, wrkr)
     lock(print_lock)
@@ -240,8 +272,9 @@ try
                     # run the test
                     running_tests[test] = now()
                     try
-
-                        resp = remotecall_fetch(runtests, wrkr, test_runners[test], test)
+                        resp = remotecall_fetch(runtests, wrkr,
+                                                test_runners[test], test,
+                                                platform)
                     catch e
                         isa(e, InterruptException) && return
                         resp = Any[e]
@@ -259,6 +292,14 @@ try
                         p = recycle_worker(p)
                     else
                         print_testworker_stats(test, wrkr, resp)
+
+                        compilations = resp[7]
+                        if Sys.iswindows() && compilations > 100
+                            # XXX: restart to avoid handle exhaustion
+                            #      (see pocl/pocl#1941)
+                            @warn "Restarting worker $wrkr to avoid handle exhaustion"
+                            p = recycle_worker(p)
+                        end
                     end
                 end
 

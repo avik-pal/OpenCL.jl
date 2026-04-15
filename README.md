@@ -1,16 +1,17 @@
 # OpenCL.jl
 
-[![][buildkite-img]][buildkite-url] [![][github-img]][github-url]
+[![][buildkite-img]][buildkite-url]
+[![Test](https://github.com/JuliaGPU/OpenCL.jl/actions/workflows/Test.yml/badge.svg)](https://github.com/JuliaGPU/OpenCL.jl/actions/workflows/Test.yml)
+[![](https://img.shields.io/badge/docs-stable-blue.svg)](https://juliagpu.github.io/OpenCL.jl/stable)
+[![](https://img.shields.io/badge/docs-dev-blue.svg)](https://juliagpu.github.io/OpenCL.jl/dev)
 
-[buildkite-img]: https://badge.buildkite.com/6b2a46bff67692115dea3ad5a275d2f80777a5a99ffe42adb0.svg
+[buildkite-img]: https://badge.buildkite.com/6b2a46bff67692115dea3ad5a275d2f80777a5a99ffe42adb0.svg?branch=master
 [buildkite-url]: https://buildkite.com/julialang/opencl-dot-jl
-[github-img]: https://github.com/JuliaGPU/OpenCL.jl/actions/workflows/CI.yml/badge.svg
-[github-url]: https://github.com/JuliaGPU/OpenCL.jl/actions/workflows/CI.yml
 
 *Julia interface for the OpenCL parallel computation API*
 
 This package aims to be a complete solution for OpenCL programming in Julia, similar in
-scope to [PyOpenCL] for Python. It provides a high level API for OpenCL to make programing
+scope to [PyOpenCL](http://mathema.tician.de/software/pyopencl/) for Python. It provides a high level API for OpenCL to make programing
 hardware accelerators, such as GPUs, FPGAs, and DSPs, as well as multicore CPUs much less
 onerous.
 
@@ -55,6 +56,11 @@ Available platforms: 3
    · Intel(R) Arc(TM) A770 Graphics (fp16, il)
 ```
 
+> [!WARNING]
+> OpenCL is only computing the list of platforms [once](https://github.com/KhronosGroup/OpenCL-ICD-Loader/blob/d547426c32f9af274ec1369acd1adcfd8fe0ee40/loader/linux/icd_linux.c#L234-L238).
+> Therefore if `using pocl_jll` is executed after `OpenCL.versioninfo()` or other calls to the OpenCL API
+> then it won't affect the list of platforms available and you will need to restart the Julia session
+> and run `using pocl_jll` before `OpenCL` is used.
 
 ## Basic example: vector add
 
@@ -75,14 +81,14 @@ const source = """
 a = rand(Float32, 50_000)
 b = rand(Float32, 50_000)
 
-d_a = CLArray(a; access=:r)
-d_b = CLArray(b; access=:r)
-d_c = similar(d_a; access=:w)
+d_a = CLArray(a)
+d_b = CLArray(b)
+d_c = similar(d_a)
 
 p = cl.Program(; source) |> cl.build!
 k = cl.Kernel(p, "vadd")
 
-clcall(k, Tuple{Ptr{Float32}, Ptr{Float32}, Ptr{Float32}},
+clcall(k, Tuple{CLPtr{Float32}, CLPtr{Float32}, CLPtr{Float32}},
        d_a, d_b, d_c; global_size=size(a))
 
 c = Array(d_c)
@@ -107,9 +113,9 @@ end
 a = rand(Float32, 50_000)
 b = rand(Float32, 50_000)
 
-d_a = CLArray(a; access=:r)
-d_b = CLArray(b; access=:r)
-d_c = similar(d_a; access=:w)
+d_a = CLArray(a)
+d_b = CLArray(b)
+d_c = similar(d_a)
 
 @opencl global_size=size(a) vadd(d_a, d_b, d_c)
 

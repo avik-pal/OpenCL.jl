@@ -1,3 +1,5 @@
+using SPIRV_LLVM_Translator_jll
+
 @testset "execution" begin
 
 @testset "@opencl" begin
@@ -39,7 +41,7 @@ end
     foo() = @opencl dummy()
     @inferred foo()
 
-    # with arguments, we call clconvert
+    # with arguments, we call OpenCL.kernel_convert
     kernel(a) = return
     bar(a) = @opencl kernel(a)
     @inferred bar(CLArray([1]))
@@ -93,7 +95,7 @@ end
 
     @test OpenCL.return_type(identity, Tuple{Int}) === Int
     @test OpenCL.return_type(sin, Tuple{Float32}) === Float32
-    @test OpenCL.return_type(getindex, Tuple{CLDeviceArray{Float32,1,AS.Global},Int32}) === Float32
+    @test OpenCL.return_type(getindex, Tuple{CLDeviceArray{Float32,1,AS.CrossWorkgroup},Int32}) === Float32
     @test OpenCL.return_type(getindex, Tuple{Base.RefValue{Integer}}) === Integer
 end
 
@@ -113,6 +115,40 @@ a = CLArray{Int}(undef, 10)
 @opencl global_size=length(a) memset(a, 42)
 @test all(Array(a) .== 42)
 
+end
+
+@testset "broadcasting" begin
+    a = rand(Float32, 2, 3)
+    b = rand(Float32, 2)
+
+    c = a .+ b
+    a_cl, b_cl = CLArray(a), CLArray(b)
+    c_cl = a_cl .+ b_cl
+    @test Array(c_cl) == c
+    @test c_cl isa CLArray{Float32, 2, OpenCL.memory_type()}
+
+    if cl.usm_supported(cl.device())
+        a_cl, b_cl = CLMatrix{Float32, cl.UnifiedSharedMemory}(a), CLVector{Float32, OpenCL.memory_type()}(b)
+        c_cl = a_cl .+ b_cl
+        @test Array(c_cl) == c
+        @test c_cl isa CLArray{Float32, 2, cl.UnifiedSharedMemory}
+    end
+end
+
+@testset "backends" begin
+    llvm_backend_llvm = sprint() do io
+        OpenCL.code_llvm(io, () -> nothing, (); dump_module = true, backend = :llvm)
+    end
+    if Int === Int64
+        @test occursin("target triple = \"spirv64-unknown-unknown-unknown\"", llvm_backend_llvm)
+    end
+
+    llvm_backend_khronos = sprint() do io
+        OpenCL.code_llvm(io, () -> nothing, (); dump_module = true, backend = :khronos)
+    end
+    if Int === Int64
+        @test occursin("target triple = \"spir64-unknown-unknown\"", llvm_backend_khronos)
+    end
 end
 
 end

@@ -1,7 +1,7 @@
 module OpenCLKernels
 
 using ..OpenCL
-using ..OpenCL: @device_override, SPIRVIntrinsics
+using ..OpenCL: @device_override, method_table
 
 import KernelAbstractions as KA
 
@@ -17,13 +17,27 @@ export OpenCLBackend
 struct OpenCLBackend <: KA.GPU
 end
 
-KA.allocate(::OpenCLBackend, ::Type{T}, dims::Tuple) where T = CLArray{T}(undef, dims)
-KA.zeros(::OpenCLBackend, ::Type{T}, dims::Tuple) where T = OpenCL.zeros(T, dims)
-KA.ones(::OpenCLBackend, ::Type{T}, dims::Tuple) where T = OpenCL.ones(T, dims)
+function KA.allocate(::OpenCLBackend, ::Type{T}, dims::Tuple; unified::Bool = false) where T
+    if unified
+        memory_backend = cl.unified_memory_backend()
+        if memory_backend === cl.USMBackend()
+            return CLArray{T, length(dims), cl.UnifiedSharedMemory}(undef, dims)
+        elseif memory_backend === cl.SVMBackend()
+            return CLArray{T, length(dims), cl.SharedVirtualMemory}(undef, dims)
+        else
+            throw(ArgumentError("Unified memory not supported"))
+        end
+    else
+        return CLArray{T}(undef, dims)
+    end
+end
+
+KA.supports_unified(::OpenCLBackend) = cl.default_memory_backend(cl.device(); unified=true) !== nothing
 
 KA.get_backend(::CLArray) = OpenCLBackend()
-KA.synchronize(::OpenCLBackend) = cl.device_synchronize()
-KA.supports_float64(::OpenCLBackend) = false  # XXX: this is platform/device dependent
+# TODO should be non-blocking
+KA.synchronize(::OpenCLBackend) = cl.finish(cl.queue())
+KA.supports_float64(::OpenCLBackend) = false  # TODO: Check if this is device dependent
 
 Adapt.adapt_storage(::OpenCLBackend, a::Array) = Adapt.adapt(CLArray, a)
 Adapt.adapt_storage(::OpenCLBackend, a::CLArray) = a
@@ -124,7 +138,9 @@ end
 end
 
 @device_override @inline function KA.__index_Global_Linear(ctx)
-    return get_global_id(1)
+    #return get_global_id(1)    # JuliaGPU/OpenCL.jl#346
+    I = KA.__index_Global_Cartesian(ctx)
+    @inbounds LinearIndices(KA.__ndrange(ctx))[I]
 end
 
 @device_override @inline function KA.__index_Local_Cartesian(ctx)
@@ -141,7 +157,7 @@ end
 
 @device_override @inline function KA.__validindex(ctx)
     if KA.__dynamic_checkbounds(ctx)
-        I = @inbounds KA.expand(KA.__iterspace(ctx), get_group_id(1), get_local_id(1))
+        I = KA.__index_Global_Cartesian(ctx)
         return I in KA.__ndrange(ctx)
     else
         return true
@@ -152,7 +168,7 @@ end
 ## Shared and Scratch Memory
 
 @device_override @inline function KA.SharedMemory(::Type{T}, ::Val{Dims}, ::Val{Id}) where {T, Dims, Id}
-    ptr = SPIRVIntrinsics.emit_localmemory(T, Val(prod(Dims)))
+    ptr = OpenCL.emit_localmemory(T, Val(prod(Dims)))
     CLDeviceArray(Dims, ptr)
 end
 
@@ -164,16 +180,16 @@ end
 ## Synchronization and Printing
 
 @device_override @inline function KA.__synchronize()
-    barrier()
+    work_group_barrier(OpenCL.LOCAL_MEM_FENCE | OpenCL.GLOBAL_MEM_FENCE)
 end
 
 @device_override @inline function KA.__print(args...)
-    SPIRVIntrinsics._print(args...)
+    OpenCL._print(args...)
 end
 
 
 ## Other
 
-KA.argconvert(::KA.Kernel{OpenCLBackend}, arg) = clconvert(arg)
+KA.argconvert(::KA.Kernel{OpenCLBackend}, arg) = OpenCL.kernel_convert(arg)
 
 end

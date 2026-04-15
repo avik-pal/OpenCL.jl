@@ -2,11 +2,14 @@ module OpenCL
 
 using GPUCompiler
 using LLVM, LLVM.Interop
-using SPIRV_LLVM_Translator_unified_jll
+using SPIRV_LLVM_Backend_jll, SPIRV_Tools_jll
 using Adapt
 using Reexport
 using GPUArrays
 using Random
+using Preferences
+
+import KernelAbstractions: KernelAbstractions
 
 using Core: LLVMPtr
 
@@ -16,41 +19,32 @@ include("../lib/cl/CL.jl")
 export cl
 
 # device functionality
-include("device/runtime.jl")
 import SPIRVIntrinsics
-let
-    # re-export functionality from SPIRVIntrinsics
-    for name in names(SPIRVIntrinsics)
-        name == :SPIRVIntrinsics && continue
-        @eval export $name
-    end
-
-    # import all the others so that the user can refer to them through the OpenCL module
-    for name in names(SPIRVIntrinsics; all=true)
-        # bring all the names of this module in scope
-        name in (:SPIRVIntrinsics, :eval, :include) && continue
-        startswith(string(name), "#") && continue
-        @eval begin
-            using .SPIRVIntrinsics: $name
-        end
-    end
-end
+SPIRVIntrinsics.@import_all
+SPIRVIntrinsics.@reexport_public
+Base.Experimental.@MethodTable(method_table)
+include("device/runtime.jl")
 include("device/array.jl")
 include("device/quirks.jl")
+include("device/random.jl")
+
+# high level implementation
+include("memory.jl")
+include("array.jl")
 
 # compiler implementation
 include("compiler/compilation.jl")
 include("compiler/execution.jl")
 include("compiler/reflection.jl")
 
-# high-level functionality
+# integrations and specialized functionality
 include("util.jl")
-include("array.jl")
+include("broadcast.jl")
 include("mapreduce.jl")
 include("gpuarrays.jl")
+include("random.jl")
 
 include("OpenCLKernels.jl")
 import .OpenCLKernels: OpenCLBackend
 export OpenCLBackend
-
 end

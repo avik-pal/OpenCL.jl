@@ -16,3 +16,11 @@ function check(f)
 
     return
 end
+
+macro CL_MAKE_VERSION(major, minor, patch)
+    quote
+        VersionNumber($major, $minor, $patch)
+    end
+end
+
+const intptr_t = Cssize_t

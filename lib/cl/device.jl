@@ -54,27 +54,27 @@ end
         return Int(scalar[])
     end
     if s === :vendor_id
-        return get_scalar(CL_DEVICE_VENDOR_ID, Cuint)
+        return get_scalar(CL_DEVICE_VENDOR_ID, cl_uint)
     elseif s === :max_compute_units
-        return get_scalar(CL_DEVICE_MAX_COMPUTE_UNITS, Cuint)
+        return get_scalar(CL_DEVICE_MAX_COMPUTE_UNITS, cl_uint)
     elseif s === :max_work_item_dims
-        return get_scalar(CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS, Cuint)
+        return get_scalar(CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS, cl_uint)
     elseif s === :max_clock_frequency
-        return get_scalar(CL_DEVICE_MAX_CLOCK_FREQUENCY, Cuint)
+        return get_scalar(CL_DEVICE_MAX_CLOCK_FREQUENCY, cl_uint)
     elseif s === :address_bits
-        return get_scalar(CL_DEVICE_ADDRESS_BITS, Cuint)
+        return get_scalar(CL_DEVICE_ADDRESS_BITS, cl_uint)
     elseif s === :max_read_image_args
-        return get_scalar(CL_DEVICE_MAX_READ_IMAGE_ARGS, Cuint)
+        return get_scalar(CL_DEVICE_MAX_READ_IMAGE_ARGS, cl_uint)
     elseif s === :max_write_image_args
-        return get_scalar(CL_DEVICE_MAX_WRITE_IMAGE_ARGS, Cuint)
+        return get_scalar(CL_DEVICE_MAX_WRITE_IMAGE_ARGS, cl_uint)
     elseif s === :global_mem_size
-        return get_scalar(CL_DEVICE_GLOBAL_MEM_SIZE, Culong)
+        return get_scalar(CL_DEVICE_GLOBAL_MEM_SIZE, cl_ulong)
     elseif s === :max_mem_alloc_size
-        return get_scalar(CL_DEVICE_MAX_MEM_ALLOC_SIZE, Culong)
+        return get_scalar(CL_DEVICE_MAX_MEM_ALLOC_SIZE, cl_ulong)
     elseif s === :max_const_buffer_size
-        return get_scalar(CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE, Culong)
+        return get_scalar(CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE, cl_ulong)
     elseif s === :local_mem_size
-        return get_scalar(CL_DEVICE_LOCAL_MEM_SIZE, Culong)
+        return get_scalar(CL_DEVICE_LOCAL_MEM_SIZE, cl_ulong)
     elseif s === :max_work_group_size
         return get_scalar(CL_DEVICE_MAX_WORK_GROUP_SIZE, Csize_t)
     elseif s === :max_parameter_size
@@ -139,6 +139,20 @@ end
         return tuple([Int(r) for r in result]...)
     end
 
+    # error handling inspired by rusticl
+    # https://gitlab.freedesktop.org/mesa/mesa/-/blob/c4385d6fb0938231114eb3023082cd33788b89b4/src/gallium/frontends/rusticl/api/device.rs#L314-320
+    if s == :sub_group_sizes
+        res_size = Ref{Csize_t}()
+        err = unchecked_clGetDeviceInfo(d, CL_DEVICE_SUB_GROUP_SIZES_INTEL, C_NULL, C_NULL, res_size)
+        if err == CL_SUCCESS && res_size[] > 1
+            result = Vector{Csize_t}(undef, res_size[] ÷ sizeof(Csize_t))
+            clGetDeviceInfo(d, CL_DEVICE_SUB_GROUP_SIZES_INTEL, sizeof(result), result, C_NULL)
+            return tuple([Int(r) for r in result]...)
+        else
+            return tuple(0, 1)
+        end
+    end
+
     if s == :max_image2d_shape
         width  = Ref{Csize_t}()
         height = Ref{Csize_t}()
@@ -190,6 +204,56 @@ function exec_capabilities(d::Device)
     )
 end
 
+usm_supported(d::Device) = "cl_intel_unified_shared_memory" in d.extensions
+
+function usm_capabilities(d::Device)
+    usm_supported(d) || throw(ArgumentError("Unified Shared Memory not supported on this device"))
+
+    function check_capability_bits(mask::cl_device_unified_shared_memory_capabilities_intel)
+        (;
+            access = mask & CL_UNIFIED_SHARED_MEMORY_ACCESS_INTEL != 0,
+            atomic_access = mask & CL_UNIFIED_SHARED_MEMORY_ATOMIC_ACCESS_INTEL != 0,
+            concurrent_access = mask & CL_UNIFIED_SHARED_MEMORY_CONCURRENT_ACCESS_INTEL != 0,
+            concurrent_atomic_access = mask & CL_UNIFIED_SHARED_MEMORY_CONCURRENT_ATOMIC_ACCESS_INTEL != 0,
+        )
+    end
+
+    host = Ref{cl_device_unified_shared_memory_capabilities_intel}()
+    device = Ref{cl_device_unified_shared_memory_capabilities_intel}()
+    single_device = Ref{cl_device_unified_shared_memory_capabilities_intel}()
+    shared = Ref{cl_device_unified_shared_memory_capabilities_intel}()
+    cross_device = Ref{cl_device_unified_shared_memory_capabilities_intel}()
+
+    clGetDeviceInfo(
+        d, CL_DEVICE_HOST_MEM_CAPABILITIES_INTEL,
+        sizeof(cl_device_unified_shared_memory_capabilities_intel), host, C_NULL
+    )
+    clGetDeviceInfo(
+        d, CL_DEVICE_DEVICE_MEM_CAPABILITIES_INTEL,
+        sizeof(cl_device_unified_shared_memory_capabilities_intel), device, C_NULL
+    )
+    clGetDeviceInfo(
+        d, CL_DEVICE_SINGLE_DEVICE_SHARED_MEM_CAPABILITIES_INTEL,
+        sizeof(cl_device_unified_shared_memory_capabilities_intel), single_device, C_NULL
+    )
+    clGetDeviceInfo(
+        d, CL_DEVICE_SHARED_SYSTEM_MEM_CAPABILITIES_INTEL,
+        sizeof(cl_device_unified_shared_memory_capabilities_intel), shared, C_NULL
+    )
+    clGetDeviceInfo(
+        d, CL_DEVICE_CROSS_DEVICE_SHARED_MEM_CAPABILITIES_INTEL,
+        sizeof(cl_device_unified_shared_memory_capabilities_intel), cross_device, C_NULL
+    )
+
+    return (;
+        host = check_capability_bits(host[]),
+        device = check_capability_bits(device[]),
+        single_device = check_capability_bits(single_device[]),
+        shared = check_capability_bits(shared[]),
+        cross_device = check_capability_bits(cross_device[]),
+    )
+end
+
 function svm_capabilities(d::Device)
     result = Ref{cl_device_svm_capabilities}()
     clGetDeviceInfo(d, CL_DEVICE_SVM_CAPABILITIES,
@@ -202,6 +266,8 @@ function svm_capabilities(d::Device)
         fine_grain_system = mask & CL_DEVICE_SVM_FINE_GRAIN_SYSTEM != 0,
     )
 end
+
+bda_supported(d::Device) = "cl_ext_buffer_device_address" in d.extensions
 
 function cl_device_type(dtype::Symbol)
     if dtype == :all
@@ -220,4 +286,41 @@ function cl_device_type(dtype::Symbol)
         throw(ArgumentError("Unknown device type: $dtype"))
     end
     return cl_dtype
+end
+
+sub_groups_supported(d::Device) = "cl_khr_subgroups" in d.extensions || "cl_intel_subgroups" in d.extensions
+function sub_group_size(d::Device)
+    sub_groups_supported(d) || 0
+    if "cl_amd_device_attribute_query" in d.extensions
+        scalar = Ref{cl_uint}()
+        clGetDeviceInfo(d, CL_DEVICE_WAVEFRONT_WIDTH_AMD, sizeof(cl_uint), scalar, C_NULL)
+        return Int(scalar[])
+    elseif "cl_nv_device_attribute_query" in d.extensions
+        scalar = Ref{cl_uint}()
+        clGetDeviceInfo(d, CL_DEVICE_WARP_SIZE_NV, sizeof(cl_uint), scalar, C_NULL)
+        return Int(scalar[])
+    else
+        sg_sizes = d.sub_group_sizes
+        return if length(sg_sizes) == 1
+            Int(only(sg_sizes))
+        elseif 32 in sg_sizes
+            32
+        elseif 64 in sg_sizes
+            64
+        elseif 16 in sg_sizes
+            16
+        else
+            Int(first(sg_sizes))
+        end
+    end
+end
+function sub_group_shuffle_supported_types(d::Device)
+    if "cl_khr_subgroup_shuffle" in d.extensions
+        res = [Int8, UInt8, Int16, UInt16, Int32, UInt32, Int64, UInt64, Float32]
+        "cl_khr_fp16" in d.extensions && push!(res, Float16)
+        "cl_khr_fp64" in d.extensions && push!(res, Float64)
+        res
+    else
+        DataType[]
+    end
 end

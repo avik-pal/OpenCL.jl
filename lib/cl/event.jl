@@ -153,7 +153,7 @@ function Base.wait(evts::Vector{AbstractEvent})
     isempty(evts) && return evts
     evt_ids = [pointer(evt) for evt in evts]
     GC.@preserve evts begin
-        clWaitForEvents(ength(evt_ids), evt_ids)
+        clWaitForEvents(length(evt_ids), evt_ids)
     end
     return evts
 end
@@ -220,7 +220,7 @@ function Base.getproperty(evt::AbstractEvent, s::Symbol)
     function profiling_info(evt::AbstractEvent, profile_info)
         time = Ref{Clong}(0)
         try
-            clGetEventProfilingInfo(evt, profile_info, sizeof(Culong), time, C_NULL)
+            clGetEventProfilingInfo(evt, profile_info, sizeof(cl_ulong), time, C_NULL)
         catch err
             if isa(err, CLError) && err.code == CL_PROFILING_INFO_NOT_AVAILABLE
                 if evt.status != :complete

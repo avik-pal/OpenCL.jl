@@ -1,4 +1,4 @@
-const opencl_builtins = String["printf"]
+const known_intrinsics = String["printf"]
 
 # OpenCL functions need to be mangled according to the C++ Itanium spec. We implement a very
 # limited version of that spec here, just enough to support OpenCL built-ins.
@@ -10,72 +10,47 @@ macro builtin_ccall(name, ret, argtypes, args...)
     argtypes = argtypes.args
 
     function mangle(T::Type)
-        if T == Cint
+        if T == Int32
             "i"
-        elseif T == Cuint
+        elseif T == UInt32
             "j"
-        elseif T == Clong
+        elseif T == Int64
             "l"
-        elseif T == Culong
+        elseif T == UInt64
             "m"
-        elseif T == Clonglong
-            "x"
-        elseif T == Culonglong
-            "y"
-        elseif T == Cshort
+        elseif T == Int16
             "s"
-        elseif T == Cushort
+        elseif T == UInt16
             "t"
-        elseif T == Cchar
+        elseif T == Int8
             "c"
-        elseif T == Cuchar
+        elseif T == UInt8
             "h"
-        elseif T == Cfloat
+        elseif T == Float16
+            "Dh"
+        elseif T == Float32
             "f"
-        elseif T == Cdouble
+        elseif T == Float64
             "d"
         elseif T <: LLVMPtr
             elt, as = T.parameters
-
-            # mangle address space
-            ASstr = if as == AS.Global
-                "CLglobal"
-            #elseif as == AS.Global_device
-            #    "CLdevice"
-            #elseif as == AS.Global_host
-            #    "CLhost"
-            elseif as == AS.Local
-                "CLlocal"
-            elseif as == AS.Constant
-                "CLconstant"
-            elseif as == AS.Private
-                "CLprivate"
-            elseif as == AS.Generic
-                "CLgeneric"
-            else
-                error("Unknown address space $AS")
-            end
-
-            # encode as vendor qualifier
-            ASstr = "U" * string(length(ASstr)) * ASstr
-
-            # XXX: where does the V come from?
-            "P" * ASstr * "V" * mangle(elt)
+            (as == AS.Private ? "P" : "PU3AS$as") * "V" * mangle(elt)
         else
             error("Unknown type $T")
         end
     end
+    mangle(::Type{NTuple{N, VecElement{T}}}) where {N, T} = "Dv$(N)_" * mangle(T)
 
     # C++-style mangling; very limited to just support these intrinsics
     # TODO: generalize for use with other intrinsics? do we need to mangle those?
     mangled = "_Z$(length(name))$name"
     for t in argtypes
         # with `@eval @builtin_ccall`, we get actual types in the ast, otherwise symbols
-        t = (isa(t, Symbol) || isa(t, Expr)) ? eval(t) : t
+        t = (isa(t, Symbol) || isa(t, Expr)) ? __module__.eval(t) : t
         mangled *= mangle(t)
     end
 
-    push!(opencl_builtins, mangled)
+    push!(__module__.known_intrinsics, mangled)
     esc(quote
         @typed_ccall($mangled, llvmcall, $ret, ($(argtypes...),), $(args...))
     end)
@@ -88,8 +63,9 @@ end
 Base.Experimental.@MethodTable(method_table)
 
 macro device_override(ex)
+    # `method_table` is not interpolated so that the local backend method_table is used
     esc(quote
-        Base.Experimental.@overlay($method_table, $ex)
+        Base.Experimental.@overlay(method_table, $ex)
     end)
 end
 
